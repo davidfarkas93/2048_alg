@@ -1,20 +1,19 @@
 #!/usr/bin/env python3
-import requests
-import time
+import copy
+import random
 import signal
 import sys
-
-from random import randint
-import random
-import copy
-from random import choice
+import time
+from functools import reduce
 from multiprocessing import Pool, TimeoutError
+from random import choice, randint
+
+import requests
 
 
 class Game:
     x = [[0 for c in range(4)] for r in range(4)]
     c_score = 0
-    copy_board = []
 
     def __init__(self, board, c_score):
         if board is None:
@@ -49,27 +48,6 @@ class Game:
                     changed = True
         return changed
 
-    def gravity_copy(self):
-        changed = False
-        for i in range(0, 4):
-            for j in range(0, 4):
-                k = i
-                while k < 4 and self.copy_board[k][j] == 0: k += 1
-                if k != i and k < 4:
-                    self.copy_board[i][j], self.copy_board[k][j] = self.copy_board[k][j], 0
-                    changed = True
-        return changed
-
-    def sum_up_copy(self):
-        changed = False
-        for i in range(0, 3):
-            for j in range(0, 4):
-                if self.copy_board[i][j] != 0 and self.copy_board[i][j] == self.copy_board[i + 1][j]:
-                    self.copy_board[i][j] = 2 * self.copy_board[i][j]
-                    self.copy_board[i + 1][j] = 0
-                    changed = True
-        return changed
-
     def sum_up(self):
         changed = False
         for i in range(0, 3):
@@ -85,53 +63,37 @@ class Game:
         moves = "wasd"  # up, left, down, right
         for i in range(len(moves)):
             if moves[i] == c:
-                self.rotate(i)
+                if i == 3:
+                    self.rotate_left(1)
+                else:
+                    self.rotate_right(i)
                 changed = any([self.gravity(), self.sum_up(), self.gravity()])
-                self.rotate(4 - i)
-                self.copy_board = [row[:] for row in self.x]
+                if i == 1:
+                    self.rotate_left(1)
+                elif i > 1:
+                    self.rotate_right(4 - i)
                 return changed
         return False
 
-    def rotate(self, n):  # rotate 90 degrees n times
+    def rotate_right(self, n):  # rotate 90 degrees n times
         for i in range(0, n):
-            y = [row[:] for row in self.x]  # clone x
+            y = copy.deepcopy(self.x)  # clone x
             for i in range(0, 4):
                 for j in range(0, 4):
                     self.x[i][3 - j] = y[j][i]
 
-    def rotate_copy(self, n):  # rotate 90 degrees n times
+    def rotate_left(self, n):  # rotate 90 degrees n times
         for i in range(0, n):
-            y = [row[:] for row in self.copy_board]  # clone x
+            y = copy.deepcopy(self.x)  # clone x
             for i in range(0, 4):
                 for j in range(0, 4):
-                    self.copy_board[i][3 - j] = y[j][i]
-
-    def process_move_copy(self, c):
-        moves = "wasd"  # up, left, down, right
-        for i in range(len(moves)):
-            if moves[i] == c:
-                self.rotate_copy(i)
-                changed = any([self.gravity_copy(), self.sum_up_copy(), self.gravity_copy()])
-                self.rotate_copy(4 - i)
-                #self.copy_board = [row[:] for row in self.x]
-                return changed
-        return False
-
-    def next_step_check(self):
-        changed = any([self.process_move_copy("w"), self.process_move_copy("a"), self.process_move_copy("s"),
-                       self.process_move_copy("d")])
-        return changed
-
-    def new_board(self):
-        self.x = [[0 for c in range(4)] for r in range(4)]
-        self.copy_board = self.x
-        self.add_number()
-        return self.x
+                    self.x[j][i] = y[i][3 - j]
 
 
-#SERVER_URL = 'https://thegame-2048.herokuapp.com'
-SERVER_URL = 'http://127.0.0.1:5000'
+SERVER_URL = 'https://thegame-2048.herokuapp.com'
+#SERVER_URL = 'http://127.0.0.1:5000'
 s = requests.Session()
+r = random.SystemRandom()
 
 def step(direction, u_id):
     game_state = s.post(SERVER_URL + '/api/play_the_game', json={
@@ -151,9 +113,10 @@ def copy_grid(param):
     return (copy.deepcopy(board), score)
 
 def getBestMove(board, score, pool):
-    grids = pool.map(copy_grid, map(lambda x: (board, score), range(300)))
+    grids = pool.map(copy_grid, map(lambda x: (board, score), range(150)))
+    #grids = []
     #for i in range(150):
-    #    grids.append((copy.deepcopy(board), score))
+    #    grids.append(copy_grid((board, score)))
     runs = pool.map(generateRun, grids)
     return getBestMoveForRuns(runs, pool)
 
@@ -161,20 +124,21 @@ def valid_moves(game):
     return [d for d in 'wasd' if copy.deepcopy(game).process_move(d)]
 
 def generateRun(param):
-    r = random.SystemRandom()
     grid, score = param
     g = Game(grid, score)
-    m_options = valid_moves(g)
+    m_options = 'wasd'
     if not m_options:
         return None
     s = r.choice(m_options)
     g.process_move(s)
+    num_of_moves = 0
     while m_options:
+        if num_of_moves > 15:
+            break
         x = r.choice(m_options)
         g.process_move(x)
         g.add_number()
-        m_options = valid_moves(g)
-
+        num_of_moves += 1
     return {'initialMove': s, 'finalScore': g.c_score}
 
 def get_avg_score(runs):
@@ -194,7 +158,6 @@ def getBestMoveForRuns(runs, pool):
     res = pool.map(get_runs_for_move, [('w', runs), ('a', runs), ('s', runs), ('d', runs)])
     avg_scores = pool.map(get_avg_score, res)
     best = max(avg_scores, key=lambda x: x['avg_score'] if x else 0)
-
     if best:
         return best['move']
     return None
@@ -204,8 +167,8 @@ if __name__ == '__main__':
     start_time = time.time()
 
     while True:
-#        resp = requests.post(SERVER_URL + '/api/new_game', json={'team_name': 'fw_alg2_1'})
-        resp = requests.get(SERVER_URL + '/api/new_game')
+        resp = requests.post(SERVER_URL + '/api/new_game', json={'team_name': 'fw_alg3_1'})
+        #resp = requests.get(SERVER_URL + '/api/new_game')
         current_state = resp.json()
 
         while not current_state.get('game_over', False):
@@ -213,6 +176,8 @@ if __name__ == '__main__':
             if not m:
                 break
             current_state = step(m, current_state['uId'])
+            print(current_state['c_score'])
+
         print('********************************')
         rounds += 1
         scores += current_state['c_score']
